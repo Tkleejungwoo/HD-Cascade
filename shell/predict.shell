@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+
+# Predict lowres, predict cascade_fullres, then retain one component per organ.
+set -euo pipefail
+
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+
+DATASET="${DATASET:-Dataset001_HDCascade}"
+TRAINER="${TRAINER:-nnUNetTrainerHDCascade2000}"
+PLANS="${PLANS:-nnUNetPlans}"
+FOLD="${FOLD:-0}"
+CHECKPOINT="${CHECKPOINT:-checkpoint_best.pth}"
+INPUT_DIR="${INPUT_DIR:-}"
+OUTPUT_DIR="${OUTPUT_DIR:-}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+export nnUNet_results="${nnUNet_results:-$REPO_ROOT/data/nnUNet_results}"
+export nnUNet_raw="${nnUNet_raw:-$REPO_ROOT/data/nnUNet_raw}"
+export nnUNet_preprocessed="${nnUNet_preprocessed:-$REPO_ROOT/data/nnUNet_preprocessed}"
+export PYTHONUNBUFFERED=1
+
+if [[ "${1:-}" == --help || "${1:-}" == -h ]]; then
+    echo 'Usage: bash predict.shell INPUT_NIFTI_DIR OUTPUT_DIR [--dry-run]'
+    echo 'Alternatively set INPUT_DIR and OUTPUT_DIR at the top or in the environment.'
+    exit 0
+fi
+
+INPUT_DIR="${1:-$INPUT_DIR}"
+OUTPUT_DIR="${2:-$OUTPUT_DIR}"
+DRY_RUN=0
+if (( $# > 2 )); then
+    [[ $# -eq 3 && "$3" == --dry-run ]] || { echo 'Unexpected arguments' >&2; exit 2; }
+    DRY_RUN=1
+fi
+
+[[ -n "$INPUT_DIR" && -d "$INPUT_DIR" && -n "$OUTPUT_DIR" ]] || {
+    echo 'Provide an existing INPUT_NIFTI_DIR and an OUTPUT_DIR; see --help.' >&2; exit 2;
+}
+
+[[ "$FOLD" =~ ^[0-4]$ ]] || { echo 'FOLD must be 0..4' >&2; exit 2; }
+command -v "$PYTHON_BIN" >/dev/null
+
+if (( ! DRY_RUN )); then command -v nnUNetv2_predict >/dev/null; fi
+for configuration in 3d_lowres 3d_cascade_fullres; do
+    checkpoint_path="$nnUNet_results/$DATASET/${TRAINER}__${PLANS}__${configuration}/fold_$FOLD/$CHECKPOINT"
+    [[ -f "$checkpoint_path" ]] || { echo "Missing checkpoint: $checkpoint_path" >&2; exit 1; }
+done
+
+# Stage channel-suffixed symlinks; never rename the user's original CT files.
+STAGED_DIR="$OUTPUT_DIR/input"
+"$PYTHON_BIN" - "$INPUT_DIR" "$STAGED_DIR" "$DRY_RUN" <<'PY'
+from pathlib import Path
+import re
+import sys
+source, staging = map(lambda p: Path(p).expanduser().resolve(), sys.argv[1:3])
+dry = sys.argv[3] == '1'
+assert source != staging, 'Use a separate output directory for staged input'
+files = sorted(source.glob('*.nii.gz'))
+assert files, f'No .nii.gz CT files in {source}'
+plan = {}
+for path in files:
+    assert not re.search(r'_000[1-9]\.nii\.gz$', path.name), 'Only single-channel CT inputs are supported'
+    name = path.name if path.name.endswith('_0000.nii.gz') else path.name[:-7] + '_0000.nii.gz'
+    assert name not in plan, f'Ambiguous input names for {name}'
+    dest = staging / name
+    if dest.exists() or dest.is_symlink():
+        assert dest.is_symlink() and dest.resolve() == path.resolve(), f'Existing different staged input: {dest}'
+    plan[name] = path.resolve()
+if staging.is_dir():
+    assert {p.name for p in staging.glob('*.nii.gz')} <= set(plan), 'Staging folder contains inputs from another run'
+if not dry:
+    staging.mkdir(parents=True, exist_ok=True)
+    for name, path in plan.items():
+        dest = staging / name
+        if not dest.is_symlink():
+            dest.symlink_to(path)
+print(f'Input cases: {len(plan)}; staged CT directory: {staging}', flush=True)
+PY
+
+run() {
+    printf 'Run: '; printf '%q ' "$@"; printf '\n'
+    if (( ! DRY_RUN )); then "$@"; fi
+}
+run nnUNetv2_predict -i "$STAGED_DIR" -o "$OUTPUT_DIR/lowres" \
+    -d "$DATASET" -c 3d_lowres -f "$FOLD" -tr "$TRAINER" -p "$PLANS" \
+    -chk "$CHECKPOINT" -npp 2 -nps 2 --disable_tta --continue_prediction
+
+run nnUNetv2_predict -i "$STAGED_DIR" -o "$OUTPUT_DIR/cascade" \
+    -d "$DATASET" -c 3d_cascade_fullres -f "$FOLD" -tr "$TRAINER" -p "$PLANS" \
+    -chk "$CHECKPOINT" -prev_stage_predictions "$OUTPUT_DIR/lowres" \
+    -npp 2 -nps 2 --disable_tta --continue_prediction
+
+run "$PYTHON_BIN" -u "$REPO_ROOT/scripts/postprocess_largest_components.py" \
+    --input-dir "$OUTPUT_DIR/cascade" --output-dir "$OUTPUT_DIR/mask" --overwrite
+
+if (( ! DRY_RUN )); then
+    "$PYTHON_BIN" - "$STAGED_DIR" "$OUTPUT_DIR" <<'PY'
+from pathlib import Path
+import sys
+source, output = map(Path, sys.argv[1:])
+expected = {p.name.removesuffix('_0000.nii.gz') + '.nii.gz' for p in source.glob('*_0000.nii.gz')}
+for stage in ('lowres', 'cascade', 'mask'):
+    actual = {p.name for p in (output / stage).glob('*.nii.gz')}
+    assert actual == expected, f'{stage}: missing {expected - actual}, unexpected {actual - expected}'
+print(f'Completed {len(expected)} cases; final masks: {output / "mask"}', flush=True)
+PY
+fi

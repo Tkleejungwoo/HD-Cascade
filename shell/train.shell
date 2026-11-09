@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+
+# Train the low-resolution stage, cascade stage, or Base + HD ablation.
+set -euo pipefail
+
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+
+DATASET="${DATASET:-Dataset001_HDCascade}"
+TRAINER="${TRAINER:-nnUNetTrainerHDCascade2000}"
+PLANS="${PLANS:-nnUNetPlans}"
+FOLD="${FOLD:-0}"
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+export nnUNet_raw="${nnUNet_raw:-$REPO_ROOT/data/nnUNet_raw}"
+export nnUNet_preprocessed="${nnUNet_preprocessed:-$REPO_ROOT/data/nnUNet_preprocessed}"
+export nnUNet_results="${nnUNet_results:-$REPO_ROOT/data/nnUNet_results}"
+export PYTHONUNBUFFERED=1
+
+usage() {
+    cat <<'HELP'
+Set DATASET, FOLD, TRAINER, PLANS and nnUNet_* paths above or via the environment.
+Install requirements and custom modules, and preprocess both configurations first.
+HELP
+}
+
+STAGE="${1:---help}"
+[[ "$STAGE" != --help && "$STAGE" != -h ]] || { usage; exit 0; }
+shift
+case "$STAGE" in lowres|cascade|all|base-hd) ;; *) usage >&2; exit 2 ;; esac
+RESUME=0
+DRY_RUN=0
+for option in "$@"; do
+    case "$option" in
+        --resume) RESUME=1 ;;
+        --dry-run) DRY_RUN=1 ;;
+        *) echo "Unknown option: $option" >&2; exit 2 ;;
+    esac
+done
+[[ "$FOLD" =~ ^[0-4]$ ]] || { echo 'FOLD must be 0..4' >&2; exit 2; }
+command -v "$PYTHON_BIN" >/dev/null
+if (( ! DRY_RUN )); then command -v nnUNetv2_train >/dev/null; fi
+PLAN_FILE="$nnUNet_preprocessed/$DATASET/$PLANS.json"
+[[ -f "$PLAN_FILE" ]] || { echo "Missing plans: $PLAN_FILE" >&2; exit 1; }
+
+# Verify the lowres/cascade link, data folders, and next-stage mask coverage.
+check_stage() {
+    "$PYTHON_BIN" - "$PLAN_FILE" "$STAGE" "$1" "$TRAINER" "$FOLD" "$DRY_RUN" <<'PY'
+import json
+import os
+from pathlib import Path
+import sys
+plan_file, stage, mode, trainer, fold, dry = sys.argv[1:]
+path = Path(plan_file)
+configs = json.loads(path.read_text())['configurations']
+def resolved(name):
+    conf = dict(configs[name])
+    parent = conf.pop('inherits_from', None)
+    return {**resolved(parent), **conf} if parent else conf
+if stage == 'base-hd':
+    needed = ['3d_fullres']
+else:
+    needed = ['3d_lowres', '3d_cascade_fullres']
+    low, cascade = resolved('3d_lowres'), resolved('3d_cascade_fullres')
+    nxt = low.get('next_stage', [])
+    nxt = [nxt] if isinstance(nxt, str) else nxt
+    assert '3d_cascade_fullres' in nxt, 'lowres plans must point to 3d_cascade_fullres'
+    assert cascade.get('previous_stage') == '3d_lowres', 'cascade plans must point to 3d_lowres'
+for name in needed:
+    folder = path.parent / resolved(name)['data_identifier']
+    assert folder.is_dir(), f'Missing preprocessed data: {folder}'
+if mode == 'cascade' and dry == '0':
+    splits = json.loads((path.parent / 'splits_final.json').read_text())
+    keys = set(splits[int(fold)]['train']) | set(splits[int(fold)]['val'])
+    prev = Path(os.environ['nnUNet_results']) / path.parent.name / f'{trainer}__{path.stem}__3d_lowres' / 'predicted_next_stage' / '3d_cascade_fullres'
+    missing = [k for k in sorted(keys) if not (prev / f'{k}.npz').is_file() and not (prev / f'{k}.b2nd').is_file()]
+    assert not missing, f'Missing {len(missing)} out-of-fold lowres masks in {prev}; run all lowres folds first. Examples: {missing[:5]}'
+PY
+}
+
+run_training() {
+    local configuration="$1" fold="$2" trainer="$3"
+    local model="$nnUNet_results/$DATASET/${trainer}__${PLANS}__${configuration}/fold_$fold"
+    local args=(nnUNetv2_train "$DATASET" "$configuration" "$fold" -tr "$trainer" -p "$PLANS")
+    if (( RESUME )); then
+        if [[ -f "$model/checkpoint_final.pth" ]]; then
+            # Resume also completes any interrupted validation/next-stage export.
+            args+=(--val)
+        elif [[ -f "$model/checkpoint_latest.pth" || -f "$model/checkpoint_best.pth" ]]; then
+            args+=(--c)
+        elif [[ -d "$model" ]]; then
+            echo "No checkpoint to resume: $model" >&2; exit 1
+        fi
+    elif [[ -d "$model" ]]; then
+        echo "Output already exists; use --resume: $model" >&2; exit 1
+    fi
+    printf 'Run: '; printf '%q ' "${args[@]}"; printf '\n'
+    if (( ! DRY_RUN )); then "${args[@]}"; fi
+}
+
+check_stage initial
+if [[ "$STAGE" == lowres || "$STAGE" == all ]]; then
+    for lowres_fold in 0 1 2 3 4; do run_training 3d_lowres "$lowres_fold" "$TRAINER"; done
+fi
+if [[ "$STAGE" == cascade || "$STAGE" == all ]]; then
+    check_stage cascade
+    run_training 3d_cascade_fullres "$FOLD" "$TRAINER"
+fi
+if [[ "$STAGE" == base-hd ]]; then
+    run_training 3d_fullres "$FOLD" nnUNetTrainerBasePlusHDCube
+fi

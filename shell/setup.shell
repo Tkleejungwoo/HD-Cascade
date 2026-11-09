@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# Install dependencies, register custom modules, and verify the active environment.
+set -euo pipefail
+
+REPO_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+PYTHON_BIN="${PYTHON_BIN:-python3}"
+export nnUNet_raw="${nnUNet_raw:-$REPO_ROOT/data/nnUNet_raw}"
+export nnUNet_preprocessed="${nnUNet_preprocessed:-$REPO_ROOT/data/nnUNet_preprocessed}"
+export nnUNet_results="${nnUNet_results:-$REPO_ROOT/data/nnUNet_results}"
+SKIP_DEPENDENCIES=0
+INSTALL_PRETRAINED=0
+for option in "$@"; do
+    case "$option" in
+        --skip-dependencies) SKIP_DEPENDENCIES=1 ;;
+        --pretrained) INSTALL_PRETRAINED=1 ;;
+        --help|-h)
+            echo 'Usage: bash shell/setup.shell [--skip-dependencies] [--pretrained]'
+            echo 'Activate a Python 3.11 environment first; no manual file copying is required.'
+            echo '--skip-dependencies only registers modules and checks an already prepared environment.'
+            echo '--pretrained downloads and installs the release weights; set PRETRAINED_ARCHIVE to use a local ZIP.'
+            exit 0 ;;
+        *) echo "Unknown option: $option" >&2; exit 2 ;;
+    esac
+done
+
+"$PYTHON_BIN" - <<'PY'
+import sys
+if sys.version_info[:2] != (3, 11):
+    raise SystemExit(f'Use Python 3.11 for the pinned environment; found {sys.version.split()[0]}')
+print(f'Environment Python: {sys.executable}', flush=True)
+PY
+
+if (( ! SKIP_DEPENDENCIES )); then
+    "$PYTHON_BIN" -m pip install -r "$REPO_ROOT/requirements.txt"
+fi
+
+# Both destination discovery and copying are handled by the installer.
+"$PYTHON_BIN" "$REPO_ROOT/scripts/install_extensions.py"
+"$PYTHON_BIN" "$REPO_ROOT/scripts/check_trainers.py"
+if (( INSTALL_PRETRAINED )); then
+    weight_args=()
+    if [[ -n "${PRETRAINED_ARCHIVE:-}" ]]; then weight_args+=(--archive "$PRETRAINED_ARCHIVE"); fi
+    "$PYTHON_BIN" "$REPO_ROOT/scripts/install_pretrained.py" "${weight_args[@]}"
+fi
+
+"$PYTHON_BIN" - <<'PY'
+import torch
+import nibabel
+import numpy
+import scipy
+import skimage
+print(f'PyTorch: {torch.__version__}; CUDA available: {torch.cuda.is_available()}')
+print('Environment setup complete. Custom modules are installed and importable.')
+PY

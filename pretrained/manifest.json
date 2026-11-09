@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "model_id": "hd-cascade-normalized-fold0-v2",
+  "inference_only": true,
+  "archive_url": "https://drive.google.com/file/d/1KIPTsrkuNEspdnISSkSYzcloECA6qhRc/view?usp=sharing",
+  "archive_sha256": "bb5bae683b3aca19edce1639f6ab0022cacc89099d46709bc4cdfd0dc6a310cf",
+  "archive_bytes": 230972451,
+  "dataset": "Dataset001_HDCascade",
+  "trainer": "nnUNetTrainerHDCascade2000",
+  "plans": "nnUNetPlans",
+  "fold": 0,
+  "checkpoint": "checkpoint_best.pth",
+  "files": [
+    {
+      "path": "Dataset001_HDCascade/nnUNetTrainerHDCascade2000__nnUNetPlans__3d_cascade_fullres/dataset.json",
+      "sha256": "96de8775480a9dc1f969d4c6ce305dfa8f2e327905b202e5f96c3340c4569056",
+      "bytes": 201
+    },
+    {
+      "path": "Dataset001_HDCascade/nnUNetTrainerHDCascade2000__nnUNetPlans__3d_cascade_fullres/fold_0/checkpoint_best.pth",
+      "sha256": "1798b88d8eb4414c813f040177e40a37208d9a5a1c7d9c904a829b515caaed9c",
+      "bytes": 124540471
+    },
+    {
+      "path": "Dataset001_HDCascade/nnUNetTrainerHDCascade2000__nnUNetPlans__3d_cascade_fullres/plans.json",
+      "sha256": "d06c70198f6b571841de2637f06d6694e33e28aee3bce067d367dff281bf38c1",
+      "bytes": 11105
+    },
+    {
+      "path": "Dataset001_HDCascade/nnUNetTrainerHDCascade2000__nnUNetPlans__3d_lowres/dataset.json",
+      "sha256": "96de8775480a9dc1f969d4c6ce305dfa8f2e327905b202e5f96c3340c4569056",
+      "bytes": 201
+    },
+    {
+      "path": "Dataset001_HDCascade/nnUNetTrainerHDCascade2000__nnUNetPlans__3d_lowres/fold_0/checkpoint_best.pth",
+      "sha256": "c9b3df5122a575d9715118a849d387b20b59be2a6cd57c5cb2614091ab8805d0",
+      "bytes": 123228599
+    },
+    {
+      "path": "Dataset001_HDCascade/nnUNetTrainerHDCascade2000__nnUNetPlans__3d_lowres/plans.json",
+      "sha256": "d06c70198f6b571841de2637f06d6694e33e28aee3bce067d367dff281bf38c1",
+      "bytes": 11105
+    },
+    {
+      "path": "model_card.json",
+      "sha256": "c87a2e7c01f11ab08963358851e5f84bb996bea635609dc256ef49542ea59653",
+      "bytes": 1372
+    }
+  ]
+}
